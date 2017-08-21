@@ -1,0 +1,652 @@
+---
+title: "Multiple Regression Analysis on Wages data"
+author: "Jha (mayanj2), Sarkar (bsarkar2), Weidler (weidler3)"
+date: "August 3, 2017"
+output:
+  html_document:
+    highlight: default
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=12, fig.height=6)
+```
+
+
+# Introduction
+
+## About the Project
+
+The study is based on understanding the relationship of wages (Dollars per hour) with other contributing variables in the context of a sampled data. Our team's goal is to build a model capable of estimating wage of an employee based on a handful of observed demographics and situations along with understanding the impact each of the variable can bring in towards determining wages.
+
+## Dataset Description
+The Wages Dataset will be used in this project. It contains observations of 534 USA employees across 11 variables randomly sampled from the Current Population Survey (CPS) in 1985. Each observation includes information on wages for the person as well as the employee's characteristics. Some of these predictors include: Education, Sex, Age, Experience, and Occupation.
+
+## Data fields
+`WAGE` - Wage (dollars per hour)
+
+`OCCUPATION` - Occupational category (1=Management,   2=Sales, 3=Clerical , 4=Service, 5=Professional, 6=Other)
+
+`SECTOR` - Sector (0=Other, 1=Manufacturing, 2=Construction)
+
+`UNION` - Indicator variable for union membership (1=Union member, 0=Not union member)
+
+`EDUCATION`- Number of years of education
+
+`EXPERIENCE`- Number of years of work experience
+
+`AGE`- Age (years)
+
+`SEX` - Indicator variable for sex (1=Female, 0=Male)
+
+`MARR` - Marital Status (0=Unmarried,  1=Married)
+
+`RACE` - Race (1=Other, 2=Hispanic, 3=White)
+
+`SOUTH` - Indicator variable for Southern Region (1=Person lives in South, 0=Person lives elsewhere)
+
+## Statment of Interest
+Exploration of contributing variables towards determining the Wage has been a consistent subject of interest in the field of economic studies. While there is no generic or definite algorithm to arrive at the earnings based on individual characteristics, our team is interested in statistical research with the topic primarily to analyze whether major influential factors like Education, Experience and Occupation only affect the earned wages or are there other subjective factors like Sex, Marital Status, Race and Geography participating directly or in conjunction with the others. Even though the survey dates back, assuming that the underlying grounds remain equally influential throughout, our team is enthusiastic towards deeper analysis in the purview of applying the core statistical principles learned in the course. We will obtain two benefits, first by familiarizing with Wages determination, and second by applying gained knowledge to practical application.
+
+## Reference
+The wage micro dataset used in the project is collected from Economics Web Institute. This dataset is originally hosted at CMU library. The dataset was studied in more detail by ER. Berndt (The Practice of Econometrics. 1991. NY: Addison-Wesley.)
+
+# Methods
+
+```{r message=FALSE, echo=TRUE, warning=FALSE}
+#Helper Functions
+# Import Libraries
+library(faraway)
+library(lmtest)
+library(knitr)
+library(car)
+library(MASS)
+library(boot)     #https://cran.r-project.org/web/packages/boot/index.html
+
+# Functions
+# Check model assumptions
+check_model = function(model, data, inf_obs = 0) {
+  gmodel = glm(formula(model), data = data)
+  mse_loocv = cv.glm(data, gmodel)$delta[1]
+  
+  if (inf_obs != 0) {
+  frame = data.frame(
+  "Breusch-Pagan" = c(bptest(model)$p.value),
+  "Shapiro-Wilk" = c((shapiro.test(model$residuals))$p.value),
+  "Adj R Squared" = c(summary(model)$adj.r.squared),
+  "LOOCV RMSE" = c(sqrt(mse_loocv)),
+  "Total Coefficients" = length(model$coefficients),
+  "P value Significance" =
+  c(pf(summary(model)$fstatistic[1], summary(model)$fstatistic[2], summary(model)$fstatistic[3], lower.tail = FALSE)),
+  "inf_obs" = c(inf_obs))
+  }
+  
+  if (inf_obs == 0) {
+  frame = data.frame(
+  "Breusch-Pagan" = c(bptest(model)$p.value),
+  "Shapiro-Wilk" = c((shapiro.test(model$residuals))$p.value),
+  "Adj R Squared" = c(summary(model)$adj.r.squared),
+  "LOOCV RMSE" = c(sqrt(mse_loocv)),
+  "Total Predictors" = length(model$coefficients),
+  "P value Significance" =
+  c(pf(summary(model)$fstatistic[1], summary(model)$fstatistic[2], summary(model)$fstatistic[3], lower.tail = FALSE)))
+  }
+  
+  rownames(frame) = ""
+  frame
+}
+
+# Plots model data to see if any assumptions are violated
+plot_diagnostics = function(model) {
+  
+  par(mfrow = c(1, 3))
+  
+  plot(fitted(model),
+  resid(model),
+  col = "darkgreen",
+  pch = 20,
+  cex = 3,
+  xlab = "Fitted",
+  ylab = "Residuals",
+  main = "Fitted vs. Residuals",
+  cex.lab=2, cex.axis=2, cex.main=2, cex.sub=2)
+  abline(h = 0, col = "darkorange", lwd = 2)
+  
+  qqnorm(resid(model), main = "Normal Q-Q Plot", col = "darkgreen",pch = 20, cex = 3,
+         cex.lab=2, cex.axis=2, cex.main=2, cex.sub=2)
+  qqline(resid(model), col = "darkorange", lwd = 2)
+  
+  hist(resid(model),
+  xlab = "Residuals",
+  main = "Histogram of Residuals",
+  col = "darkorange",
+  border = "dodgerblue",
+  breaks = 20,
+  cex.lab=2, cex.axis=2, cex.main=2, cex.sub=2)
+  
+}
+
+# Prints statistical test values of model in tabular format
+
+print_model = function(model, data, plotd = TRUE, inf_obs = 0) {
+  if (plotd == TRUE) { plot_diagnostics(model) } 
+    
+  form = paste(capture.output(print(formula(model))), collapse = '')
+  form = gsub("\\s+", " ", form)
+  kable(check_model(model, data, inf_obs), digits = 1000, caption = form)
+}
+
+# Removes influential observations and prints statistical test values
+print_model_rem_inf = function(model, data, inf_obs = TRUE, plotd = TRUE) {
+  # Store cooks distance in global variable to get referred by the lm function within
+  cd <<- cooks.distance(model)
+  cd = na.omit(cd)
+  model_noInf = lm(formula(model), data = wages, subset = cd <= 4 / length(cd))
+  if (inf_obs == TRUE) { inf_obs_count = sum(cd > (4 / length(cd)))}
+  print_model(model_noInf, wages[!(cd > 4 / length(cd)),], inf_obs = inf_obs_count, plotd)
+}
+
+```
+
+## Data Conversion
+```{r results, fig.height=10, fig.width=20, warning=FALSE}
+# Import the wages dataset but ignore the extra row in the csv with descriptions
+wages = read.csv("./Wages.csv")
+# cast each variable into the appropriate type
+wages$WAGE        = as.numeric(wages$WAGE)
+wages$EXPERIENCE  = as.numeric(wages$EXPERIENCE)
+wages$AGE         = as.numeric(wages$AGE)
+wages$EDUCATION   = as.numeric(wages$EDUCATION)
+wages$SEX         = as.factor(wages$SEX)
+wages$MARR        = as.factor(wages$MARR)
+wages$OCCUPATION  = as.factor(wages$OCCUPATION)
+wages$UNION       = as.factor(wages$UNION)
+wages$SOUTH       = as.factor(wages$SOUTH)
+wages$RACE        = as.factor(wages$RACE)
+wages$SECTOR      = as.factor(wages$SECTOR)
+
+# Check the variables of the dataset.
+str(wages)
+#Display first few rows of data
+head(wages)
+```
+
+## Model Selection Process
+
+### Objective
+Our objective is to find a linear model which explains the existing relationship, predicts the response and abides by the linear relationship model assumptions.
+
+### Measurement Criteria
+We will use a number of statistical tests and graphical analysis during the model building process to arrive at an optimized model.
+
+**Graphical analysis**
+
+- $Fitted$ $vs$ $Residuals$ $plot$ - For assessing Linearity and Constant variance assumption.
+  
+- $QQ$ $plot$ - For assessing normality assumption.
+  
+- $Histogram$ of Residuals - For assessing normality assumption.
+ 
+**Statistical tests**
+
+- $Breusch-Pagan$ $test$ - For assessing Constant variance assumption.
+   
+- $Shapiro$ $Wilk$ $Test$ - For assessing Normality assumption.
+   
+- $Adj-R^2$ - For assessing the coefficient of determination.
+   
+- $\text{RMSE}_{\text{LOOCV}}$ - Leave-one-out cross-validated RMSE.
+   
+- $p$ value - For assessing coefficient of regression.
+   
+We will also try to minimize the number of predictors to easily explain the model.
+
+We did not proceed with the option of dividing our dataset into train and test data as number of observations in `wages` dataset is not high. We decided to use leave-one-out cross-validated RMSE as one of the factor to compare different models. 
+
+$\text{RMSE}_{\text{LOOCV}} = \sqrt{\frac{1}{n}\sum_{i=1}^n \left(\frac{e_{i}}{1-h_{i}}\right)^2}$
+
+where  $h_i$  are the leverages and  $e_i$  are the usual residuals. We did have problems when calculating  $\text{RMSE}_{\text{LOOCV}}$ using this formula as this leads to value approaching infinity when leverage for an observation is 1. We looked at other options of calculating this value and found that `boot` package has suitable function for calculating $\text{RMSE}_{\text{LOOCV}}$
+
+### Approach
+We will find a model with `WAGE` as response and remaining variables as predictors. We will use various combination of predictor-response linear relationship models including additive, interactive and polynomial. We will start with additive model and interaction model and check significance of regression as well as model assumptions. We will try Box-Cox transformation to see if response transformation will help in modeling this dataset. We will examine the relationship of variables through pairs plot and see if there is a polynomial relationship between response and predictors. We will use AIC and BIC for model selection using these models as starting model.
+
+## Additive Model
+
+**Step (1)** Fit an additive model with `Wage` as the response and remaining all variables as predictors.
+
+```{r}
+add_model = lm(WAGE ~ ., data = wages)
+
+```
+
+**Step (2)** Check significance of regression as well as model assumptions. 
+
+```{r, echo=FALSE, fig.height=10, fig.width=30, message=FALSE, warning=FALSE}
+print_model(add_model, wages, plotd = TRUE)
+
+```
+
+Additive model Regression is significant as we can see from the table that p-value for the test statistic is very low. However, $\text{RMSE}_{\text{LOOCV}}$ is very high that means this model is not good for prediction. Normal Q-Q plot does not look good and it seems that normality assumption is  violated. Also, Shapiro-Wilk test has very low p-value. The null hypothesis assumes the data were sampled from a normal distribution, thus a small p-value indicates that normality assumption for this model is violated. We will examine constant variance assumption by looking at Fitted vs Residual Plot and p-value from Breusch-Pagan Test. From the Fitted vs Residual Plot, it seems that equal variance assumption might have been violated. Breusch-Pagan Test p-value is not very low so equal variance assumption will hold for $\alpha=0.01$.
+
+**Step (3)** Check collinearity
+
+```{r}
+faraway::vif(add_model)
+faraway::vif(add_model)[vif(add_model)>5] #vif greater than 5 indicates issue with collinearity
+```
+
+We can see that the model has collinearity issues. We will also look at pairs plot to determine how our predictors interact with each other and the response.
+
+```{r, fig.height=20, fig.width=20}
+# We will start with a pairs plot to determine how our predictors interact with each other and the response
+pairs = pairs(wages, col = "darkgreen", cex.labels = 2, cex = 0.2, cex.axis = 2, pch = 20)
+#Look at pairs plot between response and numeric predictors
+pairs(WAGE~ EDUCATION+AGE+EXPERIENCE, data=wages, col="darkgreen", main = 'Wages Data',
+      cex.labels = 3,cex = 3, cex.axis = 3, pch = 20)
+# It seems there is a correlation between AGE and EXPERIENCE, let's verify it
+correlation = cor(wages$AGE, wages$EXPERIENCE, use = "everything")
+```
+
+We can observe from pairs plot that `AGE` and `EXPERIENCE` are highly correlated. The correlation between `AGE` and `EXPERIENCE` is ``r correlation``, which is very high. As `AGE` increases or decreases `EXPERIENCE` also directly increase or decrease. Therefore, we will remove `EXPERIENCE` from the model for better interpretation of the model. We also observe that `AGE`, `EDUCATION` and `EXPERIENCE` values are not continuous and adding some noise to data might help. We will use `jitter` function to achieve that.
+
+```{r}
+ set.seed(1000)
+ wages$AGE=jitter(wages$AGE)
+ wages$EXPERIENCE=jitter(wages$EXPERIENCE)
+ wages$EDUCATION=jitter(wages$EDUCATION)
+```
+
+
+```{r}
+# Fit an additive model without EXPERIENCE
+add_model_mod = lm(WAGE ~ .-EXPERIENCE, data = wages)
+faraway::vif(add_model_mod)
+faraway::vif(add_model_mod)[vif(add_model_mod)>5] #vif greater than 5 indicates issue with collinearity
+```
+
+We can observe that collinearity issue is resolved after removing `EXPERIENCE` as predictor.
+
+**Step (4)** Remove influential points and check model again.
+
+```{r, fig.height=10, fig.width=20, warning=FALSE}
+print_model_rem_inf(add_model, wages)
+
+```
+
+It appears that additive model is satisfying the linearity assumption but normality and constant variance assumptions are getting violated. So we will look for a better model.
+
+## Interaction model
+
+**Step (1)** We fit an interaction model with two way interaction between all predictors. Since we already observed a high correlation between `AGE` and `EXPERIENCE`, we will keep only one of them get rid of the other.
+
+```{r, fig.height=10, fig.width=20, warning=FALSE}
+# Fit an interaction model
+int_model = lm (WAGE ~ (.-EXPERIENCE)^2, data = wages)
+print_model(int_model, wages)
+
+```
+
+We can observe that even for the interaction model, $\text{RMSE}_{\text{LOOCV}}$ is pretty high. Model assumptions also look suspect. 
+
+**Step 2** - We will try to find out if a response transformation will help in defining relationship between `WAGE` and predictors. We will use Box-Cox method to see if a response transformation is recommended.
+
+```{r, warning=FALSE}
+# Next let's check if we can transform our response variable using boxcox and our BIC model
+int_boxcox = boxcox(int_model, plotit = TRUE)
+```
+
+The plot indicates both the value that maximizes the log-likelihood, as well as a confidence interval for the  $\lambda$  value that maximizes the log-likelihood. Now, we will plot log-Likelihood again with $\lambda$  values which are more interesting
+
+```{r, warning=FALSE}
+boxcox(int_model, plotit = TRUE, lambda = seq(-0.5, 0.5, by = 0.1))
+```
+
+Using the Box-Cox method, we observed that  $\lambda=0$  is both in the interval, and extremely close to the maximum, which suggests a transformation of the form   $\log(y).$
+
+
+```{r, warning=FALSE}
+int_log_model = lm (log(WAGE) ~ (.-EXPERIENCE)^2, data = wages)
+```
+
+We check the model assumptions once again graphically and statistically.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#Evaluate Log Interaction model
+print_model(int_log_model, wages)
+```
+
+We can observe that the response transformation has tremendously improved our regression results. Our $\text{RMSE}_{\text{LOOCV}}$ is much lower and reasonable now. Q-Q plot and Fitted versus Residuals plot also look much better. Breusch-Pagan test indicates that equal variance assumption is not a suspect. Shapiro-Wilk test still shows a low p-value and normality assumption is a suspect. 
+
+We will try predictor optimization with AIC and BIC method for model selection using interaction model as the starting model.
+
+**Step 3A** - Apply BIC
+```{r, fig.height=10, fig.width=20, warning=FALSE}
+# Apply BIC to the interaction model
+bic_model = step(int_log_model, direction = "backward", trace = 0, k = log(nrow(wages)))
+```
+
+Evaluate BIC model
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#formula(aic_model)
+print_model(bic_model, wages)
+```
+
+We find that applying BIC provides us a model which abides by linearity and constant variance assumptions, but still violates the normality assumption. Next we will check for influential observations.
+
+**Step 3B** - Remove influential points from  the dataset for the BIC model.
+
+```{r, warning=FALSE}
+# Next remove influential points for BIC model
+print_model_rem_inf(bic_model, wages)
+
+```
+
+After applying BIC and removing influential points, we arrive at a model with low $\text{RMSE}_{\text{LOOCV}}$ and high $adj-R^2$. The normality assumption also holds good but constant variance assumption seems violated. We will look for a better model and apply AIC.
+
+**Step 4A** - Apply AIC
+```{r, warning=FALSE}
+# Apply AIC to the interaction model
+aic_model = step(int_log_model, direction = "backward", trace = 0)
+```
+Evaluate AIC model
+```{r, echo=FALSE, fig.height=10, fig.width=20, message=FALSE, warning=FALSE}
+#formula(aic_model)
+print_model(aic_model, wages)
+```
+
+**Step 4B** - Remove influential points from the dataset for AIC model.
+
+```{r, fig.height=10, fig.width=20, warning=FALSE}
+# Next remove influential points for AIC model
+print_model_rem_inf(aic_model, wages)
+```
+
+We see that the AIC model after removal of influential observations appear to be an acceptable model where all the assumptions are met and has low $\text{RMSE}_{\text{LOOCV}}$ and high $adj-R^2$. However the number of predictors being high, the model still remains as a challenge for explanation. We will continue our search for better model keeping the AIC interacting model in consideration - $Model_1$
+
+## Predictor Transformation
+
+Next we will apply predictor transformations to improve the model. Since we know about high correlation between `AGE`and `EXPERIENCE`, we will do two rounds of polynomial transformations leaving one of the predictors.
+
+### Polynomial Model with EDUCATION and EXPERIENCE
+
+
+```{r fig.height=7, fig.height=10, fig.width=20, warning=FALSE}
+pairs(log(WAGE)~ EDUCATION+AGE+EXPERIENCE, data=wages, col = "darkgreen", main = 'Wages Data',
+      cex.labels = 3,cex = 3, cex.axis = 3, pch = 20)
+```
+
+We can see from pairs plot that log(WAGE) and numeric predictors Education, Age and Experience may have polynomial relationship. We will try adding polynomial transformation to numeric predictors and check $\text{RMSE}_{\text{LOOCV}}$ and $adj-R^2$. 
+
+```{r, warning=FALSE}
+poly_model = lm (log(WAGE) ~ (.-AGE)^2+I(EDUCATION^2)+I(EDUCATION^3)+I(EDUCATION^4)+I(EDUCATION^5)+I(EXPERIENCE^2)+I(EXPERIENCE^3)+I(EXPERIENCE^4)+I(EXPERIENCE^5), data = wages)
+```
+
+**Step (1)** Evaluate Polynomial model
+```{r, echo=FALSE, fig.height=10, fig.width=20, message=FALSE, warning=FALSE}
+#formula(aic_model)
+print_model(poly_model, wages)
+```
+
+The model meets linearity and constant variance assumptions but normality assumption is violated. We will apply AIC and BIC for predictor transformation.
+
+**Apply AIC ad BIC**
+
+```{r, message=FALSE, warning=FALSE}
+aic_poly_model = step(poly_model, direction = "backward", trace = 0)
+
+bic_poly_model = step(poly_model, direction = "backward", trace = 0, k = log(nrow(wages)))
+
+```
+
+**Evaluate AIC model**
+```{r, echo=FALSE, fig.height=10, fig.width=20, message=FALSE, warning=FALSE}
+#formula(aic_model)
+print_model(aic_poly_model, wages)
+```
+
+Similar to the starting Polynomial model, the AIC polynomial model meets linearity and constant variance assumptions but normality assumption is violated.
+
+**Evaluate BIC model **
+```{r, echo=FALSE, fig.height=10, fig.width=20, message=FALSE, warning=FALSE}
+#formula(bic_model)
+print_model(bic_poly_model, wages)
+
+```
+
+Similar to the starting Polynomial model, the BIC polynomial model meets linearity and constant variance assumptions but normality assumption is violated. Both AIC polynomial model and BIC polynomial are having similar values for $\text{RMSE}_{\text{LOOCV}}$. Next, we will remove influential points for the AIC polynomial model and BIC polynomial model.
+
+```{r , warning= FALSE}
+# Next remove influential points for AIC model
+print_model_rem_inf(aic_poly_model, wages)
+
+```
+
+We see that after removing the influential observations, even though AIC model has higher number of predictors, the model meets the assumptions and has low $\text{RMSE}_{\text{LOOCV}}$ and high $adj-R^2$. We will continue our search for better model keeping the AIC polynomial model with removed influential observations in consideration - $Model_2$
+
+```{r}
+# Next remove influential points for BIC model
+print_model_rem_inf(bic_poly_model, wages)
+
+```
+
+We see that after removing the influential observations, the BIC polynomial model meets the linearity and normality assumptions but seems violating constant variance assumptions. But the model has low $\text{RMSE}_{\text{LOOCV}}$ and high $adj-R^2$. We will continue our search for better model keeping the AIC polynomial model with removed influential observations in consideration - $Model_3$
+
+### Polynomial Model with AGE and EDUCATION
+
+```{r, warning=FALSE}
+poly_model_alt = lm (log(WAGE) ~ (.-EXPERIENCE)^2+I(AGE^2)+I(AGE^3)+I(AGE^4)+I(AGE^5)+I(EDUCATION^2)+I(EDUCATION^3)+I(EDUCATION^4)+I(EDUCATION^5), data = wages)
+```
+
+**Evaluate Polynomial model**
+```{r, echo=FALSE, fig.height=10, fig.width=20, message=FALSE, warning=FALSE}
+#formula(aic_model)
+print_model(poly_model_alt, wages)
+```
+
+**Apply AIC ad BIC** 
+
+```{r, message=FALSE, warning=FALSE}
+aic_poly_model_alt = step(poly_model_alt, direction = "backward", trace = 0)
+
+bic_poly_model_alt = step(poly_model_alt, direction = "backward", trace = 0, k = log(nrow(wages)))
+
+```
+
+**Evaluate AIC model**
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#formula(aic_model)
+print_model(aic_poly_model_alt, wages)
+```
+
+
+**Evaluate BIC model**
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#formula(bic_model)
+print_model(bic_poly_model_alt, wages)
+
+```
+
+Both AIC and BIC are having similar values for LOOCV RMSE. We will prefer BIC as number of predictors are much less in case of BIC. Lets see what do we get if we fit model after removing influential points using cooks distance.
+
+```{r , warning= FALSE}
+# Next remove influential points for AIC model
+print_model_rem_inf(aic_poly_model_alt, wages)
+
+```
+
+We see that after removing the influential observations, even though AIC model has higher number of predictors, the model meets the assumptions and has low $\text{RMSE}_{\text{LOOCV}}$ and high $adj-R^2$. We will continue our search for better model keeping the AIC polynomial model with removed influential observation in consideration - $Model_4$
+
+```{r}
+# Next remove influential points for BIC model
+print_model_rem_inf(bic_poly_model_alt, wages)
+
+```
+
+We see that after removing the influential observations, the BIC polynomial model meets the assumptions and has low $\text{RMSE}_{\text{LOOCV}}$ and high $adj-R^2$. We will continue our search for better model keeping the BIC polynomial model with removed influential observations in consideration - $Model_5$
+
+
+## A Different Approach - Trial and Error
+
+Since we know that AIC and BIC process penalizes the non contributing predictors effectively but does not always guarantee to arrive at the most optimized model, we will also exercise trial and error. For the purpose of keeping the document volume limited, we will not present all trial and error procedures and describe only the best found one.
+
+```{r}
+#Model obtained from trial and error
+trial_model = lm(log(WAGE) ~ OCCUPATION + SECTOR + UNION + I(EDUCATION^2) + EXPERIENCE + SEX + 
+                    MARR + RACE + SOUTH + OCCUPATION:MARR + SECTOR:EDUCATION + 
+                    UNION:EDUCATION + UNION:EXPERIENCE + EDUCATION:EXPERIENCE + EDUCATION:SEX + 
+                    EDUCATION:SOUTH + EXPERIENCE:SEX + EXPERIENCE:RACE + SEX:SOUTH, data = wages)
+print_model(trial_model, wages)
+
+```
+
+We see that the starting trial model abides by linearity and constant variance assumptions but normality assumption is violated. Next we will apply AIC and BIC on trial model.
+
+```{r}
+# Apply BIC to the trial model
+bic_trial = step(trial_model, direction = "backward", trace = 0, k = log(nrow(wages)))
+```
+
+Check the BIC Model
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Evaluate BIC model
+print_model(bic_trial, wages)
+```
+
+We see that BIC trial model, like the starting trial model abides by linearity and constant variance assumptions but normality assumption is violated. Next, we remove influential observations for the BIC trial model.
+
+```{r, warning=FALSE}
+# Next remove influential points for BIC model
+print_model_rem_inf(bic_trial, wages)
+
+```
+
+We see that after removing the influential observations, BIC trial model meets the assumptions and has low $\text{RMSE}_{\text{LOOCV}}$ and high $adj-R^2$. We will continue our search for better model keeping the BIC trial model in consideration - $Model_6$
+
+Next we apply AIC to starting trial model.
+
+```{r}
+# Apply AIC to the interaction model
+aic_trial = step(trial_model, direction = "backward", trace = 0)
+```
+
+Check AIC trial model.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Evaluate AIC model
+print_model(aic_trial, wages)
+```
+
+We see that BIC trial model, like the starting trial model abides by linearity and constant variance assumptions but normality assumption is violated. Next, we remove influential observations for the BIC trial model.
+
+```{r, warning=FALSE}
+# Next remove influential points for BIC model
+print_model_rem_inf(aic_trial, wages)
+
+````
+
+We see that after removing the influential observations, AIC trial model meets the assumptions and has low $\text{RMSE}_{\text{LOOCV}}$ and high $adj-R^2$. We will continue our search for better model keeping the AIC trial model in consideration - $Model_7$
+
+# Results
+
+With the discussions and iterations performed in Methods section, we have selected 7 different models. We will study further to select the best model out of the seven models. For easy identification, we will label the models with model names (1 to 7).
+
+
+Model_1 = log(WAGE) ~ EDUCATION + SOUTH + SEX + UNION + AGE + RACE + OCCUPATION + SECTOR + MARR + EDUCATION:SOUTH + EDUCATION:SEX + EDUCATION:SECTOR + EDUCATION:MARR + SOUTH:RACE + SOUTH:OCCUPATION + SEX:RACE + UNION:AGE + UNION:OCCUPATION + OCCUPATION:MARR
+  
+Model_2 = log(WAGE) ~ EDUCATION + SOUTH + SEX + EXPERIENCE + UNION + RACE + OCCUPATION + SECTOR + MARR + I(EDUCATION^2) + I(EDUCATION^3) + I(EDUCATION^4) + I(EDUCATION^5) + I(EXPERIENCE^2) + EDUCATION:SOUTH + EDUCATION:OCCUPATION + EDUCATION:SECTOR + SOUTH:SEX + SOUTH:OCCUPATION + SEX:RACE + SEX:SECTOR + SEX:MARR + EXPERIENCE:SECTOR + UNION:OCCUPATION
+    
+Model_3 = log(WAGE) ~ EDUCATION + SEX + EXPERIENCE + UNION + OCCUPATION + SECTOR + I(EXPERIENCE^2) + I(EXPERIENCE^3) + EDUCATION:SECTOR
+      
+Model_4 = log(WAGE) ~ EDUCATION + SOUTH + SEX + UNION + AGE + RACE + OCCUPATION + SECTOR + MARR + I(AGE^2) + I(AGE^3) + I(EDUCATION^2) + I(EDUCATION^3) + I(EDUCATION^4) + I(EDUCATION^5) + EDUCATION:SOUTH + EDUCATION:AGE + EDUCATION:OCCUPATION + EDUCATION:SECTOR + SOUTH:SEX + SOUTH:OCCUPATION + SEX:RACE + SEX:SECTOR + SEX:MARR + UNION:OCCUPATION + AGE:SECTOR
+        
+Model_5 = log(WAGE) ~ EDUCATION + SEX + UNION + AGE + OCCUPATION + SECTOR + I(AGE^3) + I(AGE^4) + EDUCATION:SECTOR
+          
+Model_6 = log(WAGE) ~ OCCUPATION + UNION + EXPERIENCE + SEX + SOUTH + UNION:EDUCATION
+            
+Model_7 = log(WAGE) ~ OCCUPATION + SECTOR + UNION + EXPERIENCE + SEX + RACE + SOUTH + SECTOR:EDUCATION + UNION:EDUCATION + UNION:EXPERIENCE + EXPERIENCE:EDUCATION + SOUTH:EDUCATION + EXPERIENCE:SEX + EXPERIENCE:RACE
+
+We will chose the best model based on some criteria.
+
+- Statistical tests
+- Number of influential observations removed
+- Hierarchy principle
+
+**Statistical tests**
+
+
+```{r, echo=FALSE, warning=FALSE}
+print_model_rem_inf(aic_model, wages, plotd = FALSE)
+print_model_rem_inf(aic_poly_model, wages, plotd = FALSE)
+print_model_rem_inf(bic_poly_model, wages, plotd = FALSE)
+print_model_rem_inf(aic_poly_model_alt, wages, plotd = FALSE)
+print_model_rem_inf(bic_poly_model_alt, wages, plotd = FALSE)
+print_model_rem_inf(bic_trial, wages, plotd = FALSE)
+print_model_rem_inf(aic_trial, wages, plotd = FALSE)
+
+````
+
+$Model_1$  - Meets the linearity, normality and constant variance assumptions. But the model uses 42 predictor terms to explain the relationship. This makes the model very hard to interpret. Also the number of influential observations identified for the model is high, 28, so we will not prefer $Model_1$.
+
+$Model_2$ - Meets the linearity, normality and constant variance assumptions. But the model uses 47 predictor terms to explain the relationship. This makes the model very hard to interpret. Also the number of influential observations identified for the model is high, 28, so we will not prefer $Model_2$.
+
+$Model_3$ - Meets the linearity and normality assumptions, but constant variance assumption seems violated. So we will not prefer $Model_3$.
+
+$Model_4$ - Meets the linearity, normality and constant variance assumptions. But the model uses 49 predictor terms to explain the relationship. This makes the model very hard to interpret. Also the number of influential observations identified for the model is high, 30, so we will not prefer $Model_4$.
+
+$Model_5$ - Meets the linearity, normality and constant variance assumptions. Also model uses only 16 predictor terms to explain the relationship. This makes the model relatively easier to interpret. Also the number of influential observations identified for the model is lesser, 22, compared to other models. We will prefer $Model_5$. There is a hierarchy issue in $Model_5$ which we will deal later.
+
+$Model_6$ - Meets the linearity, normality and constant variance assumptions. Also model uses only 14 predictor terms to explain the relationship. This makes the model relatively easier to interpret. Also the number of influential observations identified for the model is lesser, 19, compared to other models. But the model violates hierarchy principle as first order term for EDUCATION is not present. We will not prefer $Model_6$.
+
+$Model_7$ - Meets the linearity, normality and constant variance assumptions. Also model uses 24 predictor terms to explain the relationship. This makes the model moderately complex to interpret. Also the number of influential observations identified for the model is higher, 31, and the model violates hierarchy principle as first order term for EDUCATION is not present. We will not prefer $Model_7$.
+
+#Discussion
+We will choose $Model_5$ as the preferred model.
+
+$Model_5$ = log(WAGE)~ EDUCATION + SEX + UNION + AGE + OCCUPATION + SECTOR + I(AGE3) + I(AGE4) + EDUCATION:SECTOR
+
+We see that $Model_5$ is violating the hierarchy principle because second degree team for AGE ($AGE^2$) is not present. We will add the term and check the model.
+
+
+```{r}
+Model_5=bic_poly_model_alt
+Model_5_mod = lm(log(WAGE)~ EDUCATION + SEX + UNION + AGE + OCCUPATION + SECTOR + I(AGE^2) + I(AGE^3) + I(AGE^4) + EDUCATION:SECTOR, data = wages)
+
+print_model_rem_inf(Model_5_mod, wages, plotd = FALSE)
+```
+
+We can see that adding second order term will lead to failing BP Test at $\alpha=0.01$. Let's also look at summary for model 5 with quadratic term and without quadratic term.
+
+```{r}
+Model_Final=Model_5
+(coef_Model=coef(lm(formula(Model_Final), data = wages, subset = cooks.distance(Model_Final) <= 4 / length(cooks.distance(Model_Final)))))
+
+```
+
+```{r}
+#Summary for model 5 without quadratic term
+summary(lm(formula(Model_5), data = wages, subset = cooks.distance(Model_5) <= 4 / length(cooks.distance(Model_5))))
+#Summary for model 5 with quadratic term
+summary(lm(formula(Model_5_mod), data = wages, subset = cooks.distance(Model_5_mod) <= 4 / length(cooks.distance(Model_5_mod))))
+
+```
+
+We can see that higher order term p-value become very high when we add quadratic term and may not be significant given other terms are in the model. Model 5 without quadratic term does not violate any assumptions and we decide to select this as our final model.
+
+We observed that selecting a good model is a complex task. We were trying to find a model with `WAGE` as response and remaining variables as predictors. Our objective was to find a linear model which explains the existing relationship, predicts the response and abides by the linear relationship model assumptions. We used various combination of predictor-response linear relationship models including additive, interactive and polynomial. We got some good models but no model was perfect. Some models which did not violate any assumptions had too many predictors which made model really difficult to interpret. Some models which has really low LOOCV RMSE and did not violate any assumptions did not follow hierarchy principles.
+
+$Model_Final$ = log(WAGE)~ EDUCATION + SEX + UNION + AGE + OCCUPATION + SECTOR + I(AGE^3) + I(AGE^4) + EDUCATION:SECTOR
+
+Here are some interpretation we can derive from model.
+
+Change in log(`Wage`) (dollars per hour) With increase in Education by a year when Sector is Other,  given other predictors are constant is : `r (coef_Model['EDUCATION'])`
+
+Change in log(`Wage`) (dollars per hour) With increase in Education by a year when Sector is Manufacturing,  given other predictors are constant is : `r (coef_Model['EDUCATION']+coef_Model['EDUCATION:SECTOR1'])`
+
+Change in log(`Wage`) (dollars per hour) With increase in Education by a year when Sector is Construction,  given other predictors are constant is : `r (coef_Model['EDUCATION']+coef_Model['EDUCATION:SECTOR2'])`
+
+
+We can see that adding second order term will lead to failing BP Test at $\alpha=0.01$. Let's also look at summary for model 5 with quadratic term and without quadratic term.
+
+# Appendix
